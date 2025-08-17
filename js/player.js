@@ -6,6 +6,517 @@ class VideoPlayer {
         this.controlsTimeout = null;
         this.zoomLevel = 1;
         this.lastTapTime = 0;
+        this.currentStreamId = null;
+        this.abortController = null;
+        this.PROXY_BASE_URL = 'https://api.leleflix.store/proxy';
+
+        // Riferimenti agli elementi del player
+        this.videoPlayer = document.getElementById('videoPlayer');
+        this.playerModal = document.getElementById('player-modal');
+        this.loadingOverlay = document.getElementById('loadingOverlay');
+        this.errorOverlay = document.getElementById('errorOverlay');
+        this.errorText = document.getElementById('errorText');
+        this.controlsContainer = document.getElementById('controlsContainer');
+        this.backButtonContainer = document.getElementById('backButtonContainer');
+        this.nextEpisodeBtn = document.getElementById('nextEpisodeBtn');
+
+        // Controlli del player
+        this.retryButton = document.getElementById('retryButton');
+        this.playPauseBtn = document.getElementById('playPauseBtn');
+        this.playIcon = document.getElementById('playIcon');
+        this.volumeBtn = document.getElementById('volumeBtn');
+        this.volumeIcon = document.getElementById('volumeIcon');
+        this.volumeSlider = document.getElementById('volumeSlider');
+        this.currentTime = document.getElementById('currentTime');
+        this.duration = document.getElementById('duration');
+        this.progressBar = document.getElementById('progressBar');
+        this.progressContainer = document.getElementById('progressContainer');
+        this.fullscreenBtn = document.getElementById('fullscreenBtn');
+        this.zoomBtn = document.getElementById('zoomBtn');
+        this.closePlayerBtn = document.getElementById('close-player');
+        this.skipForward = document.getElementById('skipForward');
+        this.skipBackward = document.getElementById('skipBackward');
+
+        this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        // Menu e impostazioni
+        this.settingsBtn = document.getElementById('settingsBtn');
+        this.audioTrackBtn = document.getElementById('audioTrackBtn');
+        this.captionsBtn = document.getElementById('captionsBtn');
+        this.settingsMenu = document.getElementById('settingsMenu');
+        this.audioMenu = document.getElementById('audioMenu');
+        this.captionsMenu = document.getElementById('captionsMenu');
+
+        this.initEventListeners();
+    }
+
+
+    toggleNextEpisodeButton() {
+        if (this.content.media_type === 'tv' &&
+            this.content.season_number &&
+            this.content.episode_number) {
+            // Verifica se esiste un episodio successivo
+            const hasNextEpisode = this.checkNextEpisodeExists();
+
+            // Mostra/nascondi con animazione
+            if (hasNextEpisode) {
+                this.nextEpisodeBtn.style.display = 'flex';
+                this.nextEpisodeBtn.style.animation = 'fadeIn 0.3s ease';
+            } else {
+                this.nextEpisodeBtn.style.animation = 'fadeOut 0.3s ease';
+                setTimeout(() => {
+                    this.nextEpisodeBtn.style.display = 'none';
+                }, 300);
+            }
+        } else {
+            this.nextEpisodeBtn.style.display = 'none';
+        }
+    }
+
+    // Aggiungi questo metodo per verificare l'esistenza del prossimo episodio
+    checkNextEpisodeExists() {
+        if (!this.content.tv_data || !this.content.tv_data.seasons) {
+            return false;
+        }
+
+        const currentSeason = this.content.tv_data.seasons.find(
+            s => s.season_number === this.content.season_number
+        );
+
+        if (!currentSeason) return false;
+
+        // Controlla se c'è un episodio successivo nella stagione
+        if (this.content.episode_number < currentSeason.episode_count) {
+            return true;
+        }
+
+        // Controlla se c'è una stagione successiva
+        const nextSeasonNumber = this.content.season_number + 1;
+        const hasNextSeason = this.content.tv_data.seasons.some(
+            s => s.season_number === nextSeasonNumber
+        );
+
+        return hasNextSeason;
+    }
+
+    // Aggiungi questo metodo per gestire il passaggio al prossimo episodio
+    async playNextEpisode() {
+        // Salva lo stato del fullscreen
+        const wasFullscreen = !!document.fullscreenElement;
+
+        if (!this.content.tv_data) return;
+
+        let nextSeason = this.content.season_number;
+        let nextEpisode = this.content.episode_number + 1;
+
+        // Verifica se siamo all'ultimo episodio della stagione
+        const currentSeason = this.content.tv_data.seasons.find(
+            s => s.season_number === this.content.season_number
+        );
+
+        if (nextEpisode > currentSeason.episode_count) {
+            // Passa alla stagione successiva, episodio 1
+            nextSeason++;
+            nextEpisode = 1;
+
+            // Verifica se esiste la stagione successiva
+            const hasNextSeason = this.content.tv_data.seasons.some(
+                s => s.season_number === nextSeason
+            );
+
+            if (!hasNextSeason) {
+                // Nessun altro episodio disponibile
+                return;
+            }
+        }
+
+        // NON chiudiamo il player completamente, ma solo la riproduzione corrente
+        if (this.hls) {
+            this.hls.destroy();
+            this.hls = null;
+        }
+
+        this.videoPlayer.pause();
+        this.videoPlayer.removeAttribute('src');
+        this.videoPlayer.load();
+
+        // Crea il nuovo contenuto per il prossimo episodio
+        const nextContent = {
+            ...this.content,
+            season_number: nextSeason,
+            episode_number: nextEpisode,
+            episode_data: null // Sarà caricato quando necessario
+        };
+
+        // Aggiorna il contenuto senza chiudere il modal
+        this.content = nextContent;
+        this.updatePlayerTitle();
+        this.toggleNextEpisodeButton();
+
+        // Inizializza il nuovo player mantenendo il fullscreen
+        await this.initPlayer();
+
+        // Se era in fullscreen, non serve rientrare perché non siamo mai usciti
+        // Il container è lo stesso e mantiene lo stato
+    }
+
+    async play(content) {
+        this.content = content;
+        this.updatePlayerTitle();
+        this.playerModal.classList.remove('hidden');
+        this.showControlsTemporarily(); // Mostra i controlli immediatamente
+        this.toggleNextEpisodeButton();
+        await this.initPlayer();
+    }
+
+    updatePlayerTitle() {
+        let playerTitle = this.content.title || this.content.name || 'Senza Titolo';
+
+        // Se è un episodio TV, formatta il titolo
+        if (this.content.media_type === 'tv' &&
+            this.content.season_number &&
+            this.content.episode_number) {
+            const episodeTitle = this.content.episode_data?.name ||
+                `Episodio \${this.content.episode_number}`;
+            playerTitle = `${this.content.name} - S${String(this.content.season_number).padStart(2, '0')}E${String(this.content.episode_number).padStart(2, '0')}: ${episodeTitle}`;
+        }
+
+        document.getElementById('player-title').textContent = playerTitle;
+    }
+
+    showNextEpisodePrompt() {
+        const prompt = document.createElement('div');
+        prompt.className = 'next-episode-prompt';
+        prompt.innerHTML = `
+        <div class="prompt-content">
+            <p>Vuoi passare al prossimo episodio?</p>
+            <div class="prompt-buttons">
+                <button id="confirmNextEpisode">Sì</button>
+                <button id="cancelNextEpisode">No</button>
+            </div>
+        </div>
+    `;
+
+        document.getElementById('player-modal').appendChild(prompt);
+
+        document.getElementById('confirmNextEpisode').addEventListener('click', () => {
+            this.playNextEpisode();
+            prompt.remove();
+        });
+
+        document.getElementById('cancelNextEpisode').addEventListener('click', () => {
+            prompt.remove();
+        });
+
+        // Nascondi automaticamente dopo 30 secondi
+        setTimeout(() => {
+            if (prompt.parentNode) {
+                prompt.remove();
+            }
+        }, 30000);
+    }
+
+
+    async initPlayer() {
+        this.loadingOverlay.classList.remove('hidden');
+        this.errorOverlay.classList.add('hidden');
+
+        // Genera un nuovo streamId e abort controller
+        this.currentStreamId = this.generateStreamId();
+        this.abortController = new AbortController();
+
+        this.videoPlayer.addEventListener('ended', () => {
+            if (this.content.media_type === 'tv' && this.checkNextEpisodeExists()) {
+                // Mostra un messaggio che chiede se passare al prossimo episodio
+                this.showNextEpisodePrompt();
+            }
+        });
+
+        try {
+            // Costruisci l'URL del proxy con lo streamId
+            let proxyUrl = `\${this.PROXY_BASE_URL}/${this.content.media_type}/${this.content.id}`;
+
+            if (this.content.media_type === 'tv' &&
+                this.content.season_number &&
+                this.content.episode_number) {
+                proxyUrl = `${this.PROXY_BASE_URL}/series/${this.content.id}/${this.content.season_number}/${this.content.episode_number}`;
+            }
+
+            // Aggiungi lo streamId alla richiesta
+            proxyUrl += `?streamId=\${this.currentStreamId}`;
+
+            // Effettua la richiesta con l'abort controller
+            const proxyResponse = await fetch(proxyUrl, {
+                signal: this.abortController.signal
+            });
+
+            if (!proxyResponse.ok) throw new Error('Failed to fetch stream URL');
+
+            const { url } = await proxyResponse.json();
+
+            if (Hls.isSupported()) {
+                if (this.hls) this.hls.destroy();
+
+                this.hls = new Hls();
+
+                // Gestione errori HLS
+                this.hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (data.fatal) {
+                        this.showError('Failed to load video stream. Please try again later.');
+                        // Annulla la richiesta se c'è un errore fatale
+                        if (this.abortController) {
+                            this.abortController.abort();
+                        }
+                    }
+                });
+
+                this.hls.loadSource(url);
+                this.hls.attachMedia(this.videoPlayer);
+
+                this.hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+                    // Forza 1080p se presente
+                    const lvl = this.hls.levels.findIndex(l => l.height === 1080);
+                    if (lvl >= 0) this.hls.currentLevel = lvl;
+
+                    this.loadingOverlay.classList.add('hidden');
+                    this.videoPlayer.play().catch(error => {
+                        console.error('Autoplay failed:', error);
+                        this.showControlsTemporarily();
+                    });
+
+                    this.setupQualityOptions();
+
+                    // AUDIO TRACKS
+                    const audioOptions = document.querySelector('.audio-options');
+                    audioOptions.innerHTML = '';
+                    if (data.audioTracks && data.audioTracks.length > 0) {
+                        data.audioTracks.forEach((track, index) => {
+                            const option = document.createElement('div');
+                            option.className = 'audio-option px-4 py-2 cursor-pointer flex items-center justify-between';
+                            option.dataset.audio = index;
+                            option.innerHTML = `
+                            <span>\${track.name || track.lang || 'Track ' + (index + 1)}</span>
+                            <i class="fas fa-check text-primary \${this.hls.audioTrack === index ? '' : 'hidden'}"></i>
+                        `;
+                            audioOptions.appendChild(option);
+                        });
+                    }
+
+                    // SUBTITLES
+                    const subtitleOptions = document.querySelector('.subtitle-options');
+                    subtitleOptions.innerHTML = '';
+                    const noneOption = document.createElement('div');
+                    noneOption.className = 'subtitle-option px-4 py-2 cursor-pointer flex items-center justify-between';
+                    noneOption.dataset.subtitle = 'none';
+                    noneOption.innerHTML = `
+                    <span>None</span>
+                    <i class="fas fa-check text-primary \${this.hls.subtitleTrack === -1 ? '' : 'hidden'}"></i>
+                `;
+                    subtitleOptions.appendChild(noneOption);
+
+                    if (data.subtitleTracks && data.subtitleTracks.length > 0) {
+                        data.subtitleTracks.forEach((track, index) => {
+                            const option = document.createElement('div');
+                            option.className = 'subtitle-option px-4 py-2 cursor-pointer flex items-center justify-between';
+                            option.dataset.subtitle = index;
+                            option.innerHTML = `
+                            <span>\${track.name || track.lang || 'Subtitle ' + (index + 1)}</span>
+                            <i class="fas fa-check text-primary \${this.hls.subtitleTrack === index ? '' : 'hidden'}"></i>
+                        `;
+                            subtitleOptions.appendChild(option);
+                        });
+                    }
+
+                    this.showControlsTemporarily();
+                });
+            } else if (this.videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+                this.videoPlayer.src = url;
+                this.videoPlayer.addEventListener('loadedmetadata', () => {
+                    this.loadingOverlay.classList.add('hidden');
+                    this.videoPlayer.play();
+                });
+            } else {
+                this.showError('Your browser does not support this video format.');
+            }
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.error('Error fetching stream:', error);
+                this.showError('Failed to load video stream. Please try again later.');
+            }
+            // Se l'errore è un abort, non mostrare messaggi di errore
+        }
+    }
+
+    // Aggiungi questo metodo alla classe VideoPlayer
+    generateStreamId() {
+        return Math.random().toString(36).substring(2, 15) +
+            Math.random().toString(36).substring(2, 15);
+    }
+
+    showError(message) {
+        this.loadingOverlay.classList.add('hidden');
+        this.errorOverlay.classList.remove('hidden');
+        this.errorText.textContent = message;
+
+        // Resetta lo stato di riproduzione
+        this.currentStreamId = null;
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
+    }
+
+    initEventListeners() {
+        // Retry button
+        this.retryButton.addEventListener('click', () => this.initPlayer());
+
+        // Play/Pause
+        this.playPauseBtn.addEventListener('click', () => this.togglePlayPause());
+        this.videoPlayer.addEventListener('play', () => this.updatePlayIcon(true));
+        this.videoPlayer.addEventListener('pause', () => this.updatePlayIcon(false));
+
+        // Volume
+        this.volumeBtn.addEventListener('click', () => this.toggleMute());
+        this.volumeSlider.addEventListener('input', (e) => this.updateVolume(e.target.value));
+
+        // Time display
+        this.videoPlayer.addEventListener('timeupdate', () => this.updateTimeDisplay());
+
+        // Progress bar
+        this.progressContainer.addEventListener('mousedown', (e) => this.startSeek(e));
+        this.progressContainer.addEventListener('touchstart', (e) => this.startSeek(e));
+        document.addEventListener('mousemove', (e) => this.handleSeek(e));
+        document.addEventListener('touchmove', (e) => this.handleSeek(e));
+        document.addEventListener('mouseup', () => this.endSeek());
+        document.addEventListener('touchend', () => this.endSeek());
+
+
+        this.nextEpisodeBtn.addEventListener('click', () => this.playNextEpisode());
+
+        // Touch controls
+        this.videoPlayer.addEventListener('touchstart', (e) => this.handleTouchStart(e));
+        this.videoPlayer.addEventListener('touchend', (e) => this.handleTouchEnd(e));
+
+        // Zoom
+        this.zoomBtn.addEventListener('click', () => this.toggleZoom());
+
+        // Fullscreen
+        this.fullscreenBtn.addEventListener('click', () => this.toggleFullscreen());
+
+        // Menu toggles
+        this.settingsBtn.addEventListener('click', () => this.toggleMenu('settings'));
+        this.audioTrackBtn.addEventListener('click', () => this.toggleMenu('audio'));
+        this.captionsBtn.addEventListener('click', () => this.toggleMenu('captions'));
+
+        // Menu selections
+        document.addEventListener('click', (e) => this.handleMenuSelection(e));
+
+        // Close player
+        this.closePlayerBtn.addEventListener('click', () => this.closePlayer());
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => this.handleKeyDown(e));
+
+        this.videoPlayer.addEventListener('mousemove', () => this.showControlsTemporarily());
+        this.videoPlayer.addEventListener('touchmove', () => this.showControlsTemporarily());
+
+        // Nascondi controlli quando il video inizia a riprodurre
+        this.videoPlayer.addEventListener('play', () => {
+            this.showControlsTemporarily();
+        });
+
+        // Mostra sempre i controlli quando il video è in pausa
+        this.videoPlayer.addEventListener('pause', () => {
+            this.controlsContainer.style.opacity = '1';
+            this.backButtonContainer.style.opacity = '1';
+            clearTimeout(this.controlsTimeout);
+        });
+    }
+
+    // Metodi per la gestione del player
+    togglePlayPause() {
+        if (this.videoPlayer.paused) {
+            this.videoPlayer.play();
+        } else {
+            this.videoPlayer.pause();
+        }
+    }
+
+    updatePlayIcon(isPlaying) {
+        this.playIcon.className = isPlaying ? 'fas fa-pause text-xl' : 'fas fa-play text-xl';
+    }
+
+    toggleMute() {
+        if (this.videoPlayer.volume === 0) {
+            this.videoPlayer.volume = this.volumeSlider.value = 1;
+            this.volumeIcon.className = 'fas fa-volume-up text-lg';
+        } else {
+            this.videoPlayer.volume = this.volumeSlider.value = 0;
+            this.volumeIcon.className = 'fas fa-volume-mute text-lg';
+        }
+    }
+
+    updateVolume(value) {
+        this.videoPlayer.volume = value;
+        if (value == 0) {
+            this.volumeIcon.className = 'fas fa-volume-mute text-lg';
+        } else if (value < 0.5) {
+            this.volumeIcon.className = 'fas fa-volume-down text-lg';
+        } else {
+            this.volumeIcon.className = 'fas fa-volume-up text-lg';
+        }
+    }
+
+    updateTimeDisplay() {
+        const currentMinutes = Math.floor(this.videoPlayer.currentTime / 60);
+        const currentSeconds = Math.floor(this.videoPlayer.currentTime % 60);
+        this.currentTime.textContent =
+            `${currentMinutes}:${currentSeconds < 10 ? '0' + currentSeconds : currentSeconds}`;
+
+        const durationMinutes = Math.floor(this.videoPlayer.duration / 60);
+        const durationSeconds = Math.floor(this.videoPlayer.duration % 60);
+        this.duration.textContent =
+            `${durationMinutes}:${durationSeconds < 10 ? '0' + durationSeconds : durationSeconds}`;
+
+        const progressPercent = (this.videoPlayer.currentTime / this.videoPlayer.duration) * 100;
+        this.progressBar.style.width = `\${progressPercent}%`;
+    }
+
+    startSeek(e) {
+        if (!this.videoPlayer.duration || isNaN(this.videoPlayer.duration)) return;
+        this.isSeeking = true;
+        this.handleSeek(e);
+    }
+
+    handleSeek(e) {
+        if (!this.isSeeking || !this.videoPlayer.duration || isNaN(this.videoPlayer.duration)) return;
+
+        const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+        if (clientX) {
+            const rect = this.progressContainer.getBoundingClientRect();
+            const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            const seekTime = pos * this.videoPlayer.duration;
+
+            if (!isNaN(seekTime) && isFinite(seekTime)) {
+                this.videoPlayer.currentTime = seekTime;
+            }
+        }
+    }
+
+    endSeek() {
+        this.isSeeking = false;
+    }
+
+    handleTouchStart(e) {
+        
+
+// js/player.js
+class VideoPlayer {
+    constructor() {
+        this.hls = null;
+        this.isSeeking = false;
+        this.controlsTimeout = null;
+        this.zoomLevel = 1;
+        this.lastTapTime = 0;
                 this.currentStreamId = null;
         this.abortController = null;
         this.PROXY_BASE_URL = 'https://api.leleflix.store/proxy';
