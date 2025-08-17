@@ -1,5 +1,89 @@
 <!DOCTYPE html>
 <html lang="it">
+  <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flixprime Video Player<link rel="stylesheet" href="styles.css">
+Your browser does not support the video tag.
+Loading...
+const playerVideo = document.getElementById('playerVideo');
+const videoOverlay = document.getElementById('videoOverlay');
+const playerPlayPauseIcon = document.getElementById('playerPlayPauseIcon');
+const loadingSpinner = document.getElementById('loadingSpinner');
+let isPlayerPlaying = false;
+let playerControlsTimeout;
+function showPlayerControls() {
+videoOverlay.classList.add('show-controls');
+clearTimeout(playerControlsTimeout);
+playerControlsTimeout = setTimeout(() => {
+videoOverlay.classList.remove('show-controls');
+}, 3000);
+}
+function togglePlayerPlayPause() {
+if (isPlayerPlaying) {
+playerVideo.pause();
+playerPlayPauseIcon.className = 'fas fa-play';
+} else {
+playerVideo.play();
+playerPlayPauseIcon.className = 'fas fa-pause';
+}
+isPlayerPlaying = !isPlayerPlaying;
+}
+playerVideo.addEventListener('loadstart', () => {
+loadingSpinner.style.display = 'block';
+showPlayerControls();
+});
+playerVideo.addEventListener('loadeddata', () => {
+loadingSpinner.style.display = 'none';
+showPlayerControls();
+});
+playerVideo.addEventListener('play', () => {
+isPlayerPlaying = true;
+playerPlayPauseIcon.className = 'fas fa-pause';
+});
+playerVideo.addEventListener('pause', () => {
+isPlayerPlaying = false;
+playerPlayPauseIcon.className = 'fas fa-play';
+showPlayerControls();
+});
+document.addEventListener('dblclick', (e) => {
+const rect = playerVideo.getBoundingClientRect();
+const clickPosition = (e.clientX - rect.left) / rect.width;
+if (clickPosition < 0.3) {
+skipPlayerTime(-10);
+} else if (clickPosition > 0.7) {
+skipPlayerTime(10);
+}
+});
+function skipPlayerTime(seconds) {
+playerVideo.currentTime += seconds;
+}
+document.querySelector('.play-pause-btn').addEventListener('click', togglePlayerPlayPause);
+// Manage key events for player controls
+document.addEventListener('keydown', (e) => {
+if (document.getElementById("player-container").style.display !== 'flex') return;
+switch(e.code) {
+case 'Space':
+e.preventDefault();
+togglePlayerPlayPause();
+break;
+case 'ArrowLeft':
+e.preventDefault();
+skipPlayerTime(-10);
+break;
+case 'ArrowRight':
+e.preventDefault();
+skipPlayerTime(10);
+break;
+}
+});
+// Show controls on mouse move
+document.getElementById('player-container').addEventListener('mousemove', showPlayerControls);
+playerVideo.addEventListener('timeupdate', updatePlayerProgress);
+function updatePlayerProgress() {
+const progressBar = document.querySelector('.progress-bar');
+progressBar.style.width = (playerVideo.currentTime / playerVideo.duration) * 100 + '%';
+}
+</script>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
